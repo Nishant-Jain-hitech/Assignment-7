@@ -139,7 +139,7 @@ def login(user: UserLogin, db: Session = Depends(get_db)):
     return {"access_token": access_token, "token_type": "bearer"}
 
 
-@router.get("/students")
+@router.get("/students", response_model=list[StudentProfile])
 def get_students(
     current_user: User = Depends(require_roles("admin")), db: Session = Depends(get_db)
 ):
