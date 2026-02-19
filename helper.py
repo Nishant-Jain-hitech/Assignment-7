@@ -1,3 +1,6 @@
+from database import get_db
+from fastapi import Depends
+from sqlalchemy.orm import Session
 import re
 import math
 import random
@@ -7,6 +10,7 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
 from config import settings
+from models import User
 
 
 def generate_otp():
@@ -58,3 +62,10 @@ def check_mail(new_email):
     if not re.match(email_pattern,new_email):
         return False
     return True
+
+
+def check_if_teacher_id(id:int, db:Session=Depends(get_db)):
+    user=db.query(User).filter(User.id==id).first()
+    if user.role=="teacher":
+        return True
+    return False

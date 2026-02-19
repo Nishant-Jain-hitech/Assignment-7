@@ -10,6 +10,17 @@ from database import get_db
 from config import settings
 
 
+def require_roles(*allowed_roles: str):
+    def role_checker(current_user: User = Depends(get_current_user)):
+        if current_user.role not in allowed_roles:
+            raise HTTPException(
+                status_code=403, 
+                detail=f"Abey! {current_user.role} allowed nahi h. Only {allowed_roles} can enter."
+            )
+        return current_user
+    return role_checker
+
+
 def create_access_token(data: dict):
     to_encode = data.copy()
     expire = datetime.now(timezone.utc) + timedelta(
