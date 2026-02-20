@@ -7,7 +7,7 @@ class UserCreate(BaseModel):
     username: Optional[str] | None = None
     email: Optional[EmailStr] | None = None
     password: Optional[str] | None = None
-    role: str
+    role: Optional[str] = "student"
     name: Optional[str] | None = None
     grade: Optional[str] | None = None
     created_by: Optional[int] | None = None
@@ -20,10 +20,19 @@ class UserLogin(BaseModel):
 
 class StudentProfile(BaseModel):
     id: int
-    student_user_id:int
-    name: str
-    grade: str
-    created_by: int
+    student_user_id: Optional[int]
+    username: Optional[str]
+    name: Optional[str]
+    grade: Optional[str]
+    email: Optional[EmailStr]
+    created_by: Optional[int]
+
+
+class UserResponse(BaseModel):
+    id: int
+    username: Optional[str]
+    email: Optional[EmailStr]
+    role: Optional[str]
 
 
 class UpdateStudent(BaseModel):

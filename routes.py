@@ -1,10 +1,15 @@
+from typing import List, Union
+from models import UserRole
 from schemas import UpdateStudent
-from fastapi import APIRouter, HTTPException, Depends
-from sqlalchemy.orm import Session
+from fastapi import APIRouter, HTTPException, Depends, Query
+from sqlalchemy import select, or_
+from typing import Optional
+from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from database import get_db
+from database import get_db, async_get_db
 from models import User, Student
-from schemas import UserCreate, UserLogin, StudentProfile
+from schemas import UserCreate, UserLogin, StudentProfile, UserResponse
 from auth import (
     hash_password,
     get_current_user,
@@ -87,10 +92,10 @@ def create_user(
 
         hashed_pwd = hash_password(user.password)
         student_user = User(
-            username=user.name,
+            username=user.username,
             email=user.email,
             password=hashed_pwd,
-            role=user.role,
+            role=UserRole.STUDENT,
         )
         db.add(student_user)
         db.flush()
@@ -139,24 +144,7 @@ def login(user: UserLogin, db: Session = Depends(get_db)):
     return {"access_token": access_token, "token_type": "bearer"}
 
 
-@router.get("/students", response_model=list[StudentProfile])
-def get_students(
-    current_user: User = Depends(require_roles("admin")), db: Session = Depends(get_db)
-):
-    students = db.query(Student).all()
-    return students
-
-
-@router.get("/my-students",response_model=list[StudentProfile])
-def get_my_students(
-    current_user: User = Depends(require_roles("teacher")),
-    db: Session = Depends(get_db),
-):
-    students = db.query(Student).filter(Student.created_by == current_user.id).all()
-    return students
-
-
-@router.delete("/delete-student",response_model=dict)
+@router.delete("/delete-student", response_model=dict)
 def delete_student(
     student_user_id: int,
     current_user: User = Depends(require_roles("admin")),
@@ -176,7 +164,7 @@ def delete_student(
     return {"message": "bhaga diya bhai"}
 
 
-@router.patch("/update-student",response_model=StudentProfile)
+@router.patch("/update-student", response_model=StudentProfile)
 def update_student(
     student_user_id: int,
     data: UpdateStudent,
@@ -206,3 +194,96 @@ def update_student(
     db.commit()
     db.refresh(db_student)
     return db_student
+
+
+@router.get("/users", response_model=List[Union[StudentProfile, UserResponse]])
+async def get_users(
+    teachers: bool = False,
+    admins: bool = False,
+    teacher_id: Optional[int] = None,
+    current_user: User = Depends(require_roles("admin", "teacher")),
+    db: AsyncSession = Depends(async_get_db),
+):
+    if current_user.role == UserRole.ADMIN:
+        if teachers:
+            result = await db.execute(select(User).where(User.role == UserRole.TEACHER))
+            return result.scalars().all()
+
+        if admins:
+            result = await db.execute(select(User).where(User.role == UserRole.ADMIN))
+            return result.scalars().all()
+
+        query = select(Student).options(joinedload(Student.user_account))
+        if teacher_id:
+            query = query.where(Student.created_by == teacher_id)
+
+        result = await db.execute(query)
+        students = result.scalars().all()
+
+        return [
+            {
+                "id": s.id,
+                "student_user_id": s.student_user_id,
+                "username": s.user_account.username,
+                "name": s.name,
+                "grade": s.grade,
+                "email": s.user_account.email,
+                "created_by": s.created_by,
+            }
+            for s in students
+        ]
+
+    result = await db.execute(
+        select(Student)
+        .options(joinedload(Student.user_account))
+        .where(Student.created_by == current_user.id)
+    )
+    students = result.scalars().all()
+
+    return [
+        {
+            "id": s.id,
+            "student_user_id": s.student_user_id,
+            "username": s.user_account.username,
+            "name": s.name,
+            "grade": s.grade,
+            "email": s.user_account.email,
+            "created_by": s.created_by,
+        }
+        for s in students
+    ]
+
+
+@router.get("/my-profile", response_model=StudentProfile | UserResponse | dict)
+async def get_profile(
+    current_user: User = Depends(require_roles("admin", "teacher", "student")),
+    db: AsyncSession = Depends(async_get_db),
+):
+    if current_user.role == UserRole.STUDENT:
+        result = await db.execute(
+            select(Student)
+            .options(joinedload(Student.user_account))
+            .where(Student.created_by == current_user.id)
+        )
+        students = result.scalars().first()
+
+        return [
+            {
+                "id": s.id,
+                "student_user_id": s.student_user_id,
+                "username": s.user_account.username,
+                "name": s.name,
+                "grade": s.grade,
+                "email": s.user_account.email,
+                "created_by": s.created_by,
+            }
+            for s in students
+        ]
+
+    else:
+        return {
+            "id": current_user.id,
+            "username": current_user.username,
+            "email": current_user.email,
+            "role": current_user.role,
+        }
