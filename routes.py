@@ -1,8 +1,8 @@
 from typing import List, Union
 from models import UserRole
 from schemas import UpdateStudent
-from fastapi import APIRouter, HTTPException, Depends, Query
-from sqlalchemy import select, or_
+from fastapi import APIRouter, HTTPException, Depends
+from sqlalchemy import select, insert
 from typing import Optional
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -12,7 +12,6 @@ from models import User, Student
 from schemas import UserCreate, UserLogin, StudentProfile, UserResponse
 from auth import (
     hash_password,
-    get_current_user,
     create_access_token,
     verify_password,
     require_roles,
@@ -48,17 +47,15 @@ def create_user(
     current_user: User = Depends(require_roles("admin", "teacher")),
     db: Session = Depends(get_db),
 ):
+    if current_user.role == "teacher":
+        user.role = "student"
 
     existing_user = db.query(User).filter(User.email == user.email).first()
-
     if existing_user:
         raise HTTPException(status_code=400, detail="email already exists")
 
     if user.role not in ["admin", "teacher", "student"]:
         raise HTTPException(status_code=400, detail="bhai role nhi h")
-
-    if current_user.role == "student":
-        raise HTTPException(status_code=403, detail="student nhi bna sakta kuchh bhi")
 
     if current_user.role == "teacher" and user.role in ["admin", "teacher"]:
         raise HTTPException(
@@ -66,12 +63,7 @@ def create_user(
         )
 
     if user.role == "student":
-        if current_user.role not in ["admin", "teacher"]:
-            raise HTTPException(status_code=403, detail="bhai role sahi daal")
-
-        creator_id = (
-            current_user.id if current_user.role == "teacher" else user.created_by
-        )
+        creator_id = current_user.id if current_user.role == "teacher" else user.created_by
 
         if not creator_id:
             raise HTTPException(
@@ -82,13 +74,14 @@ def create_user(
             student_count = (
                 db.query(Student).filter(Student.created_by == current_user.id).count()
             )
-            if student_count > 30:
+            if student_count >= 30:
                 raise HTTPException(
                     status_code=403, detail="bhai 30 se jyada student nhi bna sakte"
                 )
+        
         if current_user.role == "admin":
             if not check_if_teacher_id(user.created_by, db):
-                raise HTTPException(status_code=403, detail="bhai role sahi daal")
+                raise HTTPException(status_code=403, detail="bhai teacher id sahi daal")
 
         hashed_pwd = hash_password(user.password)
         student_user = User(
@@ -109,8 +102,7 @@ def create_user(
 
         db.add(student)
         db.commit()
-        db.refresh(student)
-        db.refresh(student_user)
+        return {"user": "student created"}
 
     if user.role in ["admin", "teacher"] and current_user.role == "admin":
         hashed_pwd = hash_password(user.password)
@@ -123,9 +115,9 @@ def create_user(
 
         db.add(new_user)
         db.commit()
-        db.refresh(new_user)
+        return {"user": "{} created".format(user.role)}
 
-    return {"user": "{} created".format(user.role)}
+    raise HTTPException(status_code=400, detail="Invalid request")
 
 
 @router.post("/login", response_model=dict)
@@ -238,7 +230,7 @@ async def get_users(
         .options(joinedload(Student.user_account))
         .where(Student.created_by == current_user.id)
     )
-    students = result.scalars().all()
+    students = result.scalars().first()
 
     return [
         {
@@ -263,22 +255,19 @@ async def get_profile(
         result = await db.execute(
             select(Student)
             .options(joinedload(Student.user_account))
-            .where(Student.created_by == current_user.id)
+            .where(Student.student_user_id == current_user.id)
         )
-        students = result.scalars().first()
+        s = result.scalars().first()
 
-        return [
-            {
-                "id": s.id,
-                "student_user_id": s.student_user_id,
-                "username": s.user_account.username,
-                "name": s.name,
-                "grade": s.grade,
-                "email": s.user_account.email,
-                "created_by": s.created_by,
-            }
-            for s in students
-        ]
+        return {
+            "id": s.id,
+            "student_user_id": s.student_user_id,
+            "username": s.user_account.username,
+            "name": s.name,
+            "grade": s.grade,
+            "email": s.user_account.email,
+            "created_by": s.created_by,
+        }
 
     else:
         return {
@@ -287,3 +276,49 @@ async def get_profile(
             "email": current_user.email,
             "role": current_user.role,
         }
+
+
+@router.post("/bulk-signup")
+async def bulk_create_students(
+    students_data: list[UserCreate],
+    current_user: User = Depends(require_roles("admin", "teacher")),
+    db: AsyncSession = Depends(async_get_db),
+):
+    if current_user.role == "teacher" and len(students_data) > 30:
+        raise HTTPException(status_code=400, detail="Bulk limit exceeded")
+
+    user_mappings = []
+    for data in students_data:
+        user_mappings.append(
+            {
+                "username": data.username,
+                "email": data.email,
+                "password": hash_password(data.password),
+                "role": UserRole.STUDENT,
+            }
+        )
+
+    result = await db.execute(
+        insert(User).returning(User.id, User.email), user_mappings
+    )
+    created_users = result.all()
+
+    email_to_id = {user.email: user.id for user in created_users}
+
+    student_mappings = []
+    for data in students_data:
+        student_mappings.append(
+            {
+                "name": data.name,
+                "grade": data.grade,
+                "student_user_id": email_to_id[data.email],
+                "created_by": current_user.id
+                if current_user.role == "teacher"
+                else data.created_by,
+            }
+        )
+
+    await db.execute(insert(Student), student_mappings)
+    await db.commit()
+
+    return {"message": f"{len(student_mappings)} students created in bulk"}

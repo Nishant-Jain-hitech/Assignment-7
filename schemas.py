@@ -7,7 +7,7 @@ class UserCreate(BaseModel):
     username: Optional[str] | None = None
     email: Optional[EmailStr] | None = None
     password: Optional[str] | None = None
-    role: Optional[str] = "student"
+    role: Optional[str] | None = None
     name: Optional[str] | None = None
     grade: Optional[str] | None = None
     created_by: Optional[int] | None = None
